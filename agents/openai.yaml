@@ -1,0 +1,7 @@
+interface:
+  display_name: "Zotero Literature Guide"
+  short_description: "Chinese Zotero paper guide packages"
+  default_prompt: "Use $zotero-literature-guide to build a Chinese literature guide package for this Zotero item."
+
+policy:
+  allow_implicit_invocation: true
