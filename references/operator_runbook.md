@@ -24,6 +24,15 @@ curl.exe -sS http://localhost:18000/docs
 
 If Zotero is not reachable, stop before any Zotero item workflow. If MinerU is not reachable, either stop or use the documented fallback route; do not silently generate a guide from a weak PDF read.
 
+When the OpenAI Zotero plugin is installed, prefer its helper for Zotero readiness:
+
+```powershell
+$zoteroHelper = "<plugin-root>\skills\zotero\scripts\zotero.py"
+py -3 $zoteroHelper status --json
+```
+
+Use the helper path from the active Zotero plugin cache. If the helper is not found or does not run, fall back to `curl.exe` and this skill's bundled scripts.
+
 ## 1. Resolve The Zotero Item
 
 Default input is a Zotero item key.
@@ -31,7 +40,13 @@ Default input is a Zotero item key.
 If the user gives a title, resolve it to an item key first:
 
 ```powershell
-python C:\Users\A_Tas\.codex\skills\zotero-literature-guide\scripts\zotero_title_search.py `
+py -3 $zoteroHelper search "<paper title>" --json --with-bibtex-keys
+```
+
+If the Zotero plugin helper is unavailable or returns ambiguous output, fall back to:
+
+```powershell
+python <skill-root>\scripts\zotero_title_search.py `
   --title "<paper title>" `
   --json `
   --output work\title_search_<slug>.json
@@ -59,12 +74,22 @@ Do not use a root-level `<item_key>/` folder for production output. Temporary ex
 ## 3. Resolve Metadata And Source PDF
 
 ```powershell
-python C:\Users\A_Tas\.codex\skills\zotero-literature-guide\scripts\zotero_local_lookup.py `
+python <skill-root>\scripts\zotero_local_lookup.py `
   --item-key <item_key> `
   --output-dir <package>\source `
-  --zotero-data-dir "D:\Program Files\Zotero" `
+  --zotero-data-dir "<ZOTERO_DATA_DIR>" `
   --json
 ```
+
+The Zotero plugin helper can supplement this lookup:
+
+```powershell
+py -3 $zoteroHelper children <item_key> --json
+py -3 $zoteroHelper file-url <attachment_key>
+py -3 $zoteroHelper export-bibtex --item-key <item_key> --out <package>\source\zotero_item.bib
+```
+
+Still keep `source/zotero_item.json`, `source/zotero_children.json`, and `source/zotero_lookup.json` from the package lookup script because they are the workflow's provenance files.
 
 Expected files:
 
@@ -88,7 +113,7 @@ Run local MinerU with production options:
 
 ```powershell
 powershell -ExecutionPolicy Bypass `
-  -File C:\Users\A_Tas\.codex\skills\zotero-literature-guide\scripts\mineru_local_parse.ps1 `
+  -File <skill-root>\scripts\mineru_local_parse.ps1 `
   -PdfPath <package>\source\source.pdf `
   -OutputJson <package>\extraction\mineru_result.json
 ```
@@ -96,7 +121,7 @@ powershell -ExecutionPolicy Bypass `
 Normalize output:
 
 ```powershell
-python C:\Users\A_Tas\.codex\skills\zotero-literature-guide\scripts\extract_mineru_result.py `
+python <skill-root>\scripts\extract_mineru_result.py `
   --input <package>\extraction\mineru_result.json `
   --output-dir <package>\extraction `
   --assets-dir <package>\assets `
@@ -117,7 +142,7 @@ Stop if `content_list.json` is missing when the paper has figures/formulas/table
 ## 5. Build And Repair The Paragraph Index
 
 ```powershell
-python C:\Users\A_Tas\.codex\skills\zotero-literature-guide\scripts\build_paragraph_index.py `
+python <skill-root>\scripts\build_paragraph_index.py `
   --content-list <package>\extraction\content_list.json `
   --output <package>\extraction\paragraph_index.json `
   --report <package>\extraction\paragraph_boundary_report.md
@@ -134,7 +159,7 @@ Manual repair is expected. Treat natural paragraphs as semantic units:
 Run draft harness after index repair:
 
 ```powershell
-python C:\Users\A_Tas\.codex\skills\zotero-literature-guide\scripts\literature_guide_harness.py `
+python <skill-root>\scripts\literature_guide_harness.py `
   --package <package> `
   --workspace <workspace> `
   --stage draft `
@@ -197,7 +222,7 @@ Rules:
 Formula compile gate:
 
 ```powershell
-python C:\Users\A_Tas\.codex\skills\zotero-literature-guide\scripts\validate_formula_latex.py `
+python <skill-root>\scripts\validate_formula_latex.py `
   --asset-manifest <package>\asset_manifest.json `
   --json-output <package>\formula_latex_validation.json `
   --json
@@ -210,7 +235,7 @@ If this report is `fail`, do not disable math parsing globally. Use the report t
 Clean:
 
 ```powershell
-python C:\Users\A_Tas\.codex\skills\zotero-literature-guide\scripts\clean_guide_markdown.py `
+python <skill-root>\scripts\clean_guide_markdown.py `
   --guide <package>\literature_guide.md `
   --asset-manifest <package>\asset_manifest.json `
   --in-place `
@@ -220,7 +245,7 @@ python C:\Users\A_Tas\.codex\skills\zotero-literature-guide\scripts\clean_guide_
 Write validation JSON through Python, not PowerShell redirection:
 
 ```powershell
-python C:\Users\A_Tas\.codex\skills\zotero-literature-guide\scripts\validate_guide.py `
+python <skill-root>\scripts\validate_guide.py `
   --guide <package>\literature_guide.md `
   --index <package>\extraction\paragraph_index.json `
   --assets-dir <package> `
@@ -239,7 +264,7 @@ Capture that stdout in Python and write UTF-8 `guide_validation.json`.
 Then run:
 
 ```powershell
-python C:\Users\A_Tas\.codex\skills\zotero-literature-guide\scripts\literature_guide_harness.py `
+python <skill-root>\scripts\literature_guide_harness.py `
   --package <package> `
   --workspace <workspace> `
   --stage draft `
@@ -283,7 +308,7 @@ validated MinerU formula LaTeX is rendered; image fallback appears only for form
 Run:
 
 ```powershell
-python C:\Users\A_Tas\.codex\skills\zotero-literature-guide\scripts\literature_guide_harness.py `
+python <skill-root>\scripts\literature_guide_harness.py `
   --package <package> `
   --workspace <workspace> `
   --stage rendered `
@@ -319,7 +344,7 @@ Do not mark a local-model draft as ready merely because validator and rendered h
 Only after rendered harness and content review pass:
 
 ```powershell
-python C:\Users\A_Tas\.codex\skills\zotero-literature-guide\scripts\build_attachment_manifest.py `
+python <skill-root>\scripts\build_attachment_manifest.py `
   --zotero-item-key <item_key> `
   --package-dir <package> `
   --validation-status <pass|warn|fail> `
@@ -341,7 +366,7 @@ If manifest status is `blocked`, do not attach.
 Before any Zotero write:
 
 ```powershell
-python C:\Users\A_Tas\.codex\skills\zotero-literature-guide\scripts\literature_guide_harness.py `
+python <skill-root>\scripts\literature_guide_harness.py `
   --package <package> `
   --workspace <workspace> `
   --stage pre-attach `
@@ -376,6 +401,8 @@ tags: codex-literature-guide, guide-needs-review
 ```
 
 Use `references/zotero_contract.md` for the confirmed attachment route.
+
+Do not use the Zotero plugin helper `import-bibtex` or `import-ris` commands for this step. They import reference records into the currently selected Zotero target and do not attach `literature_guide.pdf` under the existing parent item.
 
 For batch attach, first produce a decision table with one row per item key:
 

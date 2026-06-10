@@ -25,7 +25,7 @@ Local PDF mode is only a fallback/debug route. If no Zotero item key is availabl
 If only `paper_title` is supplied, resolve it first:
 
 ```powershell
-python C:\Users\A_Tas\.codex\skills\zotero-literature-guide\scripts\zotero_title_search.py `
+python <skill-root>\scripts\zotero_title_search.py `
   --title "<paper title>" `
   --json `
   --output work\title_search_<slug>.json
@@ -63,7 +63,7 @@ Preferred script:
 python scripts/zotero_local_lookup.py `
   --item-key <ITEM_KEY> `
   --output-dir <package>/source `
-  --zotero-data-dir "D:\Program Files\Zotero"
+  --zotero-data-dir "<ZOTERO_DATA_DIR>"
 ```
 
 Save:
@@ -552,7 +552,7 @@ Run `scripts/literature_guide_harness.py` after paragraph-index repair, after Ma
 Draft-stage example:
 
 ```powershell
-python C:\Users\A_Tas\.codex\skills\zotero-literature-guide\scripts\literature_guide_harness.py `
+python <skill-root>\scripts\literature_guide_harness.py `
   --package <package> `
   --workspace <guide_output_root_parent> `
   --stage draft `
@@ -597,7 +597,7 @@ The review record must include reviewer identity, review time, and review scope 
 Build `attachment_manifest.json` only after the package status and harness state agree:
 
 ```powershell
-python C:\Users\A_Tas\.codex\skills\zotero-literature-guide\scripts\build_attachment_manifest.py `
+python <skill-root>\scripts\build_attachment_manifest.py `
   --zotero-item-key <item_key> `
   --package-dir <package> `
   --validation-status <pass|warn|fail> `

@@ -26,13 +26,15 @@ Build one Chinese literature guide package for one paper at a time. Treat batch 
 - Treat `scripts/literature_guide_harness.py` as the package gate after indexing, after Markdown assembly, after rendering, and before any Zotero write.
 - In batch runs, subagents may only generate local `outputs/<item_key>/` packages. Judge completion by `status.json`, `attachment_manifest.json`, and harness reports, not by subagent IDs or heartbeat status.
 - Stop heartbeat/monitor agents as soon as all active package agents are complete or blocked at a user decision gate. Do not keep reminder loops alive after the work has reached `ready`, `duplicate`, `PDF gate`, or `needs user decision`.
+- If the OpenAI Zotero plugin helper is installed, reuse it for Zotero readiness, library search, children listing, attachment file URLs, indexed full text, BibTeX export, and connector record import. Do not use it as the final guide-PDF attachment writer unless it explicitly supports stored-file attachment creation, title/tag updates, and post-write verification.
 
 ## Workflow
 
 1. Resolve input.
    - If given a Zotero item key, read Zotero metadata and locate PDF attachments through Zotero's local API.
-   - If given a paper title, use `scripts/zotero_title_search.py` to resolve exactly one high-confidence Zotero item key before continuing; if ambiguous, ask for the item key.
-   - Use `scripts/zotero_local_lookup.py` to save `source/zotero_item.json`, `source/zotero_children.json`, and `source/zotero_lookup.json`.
+   - If the OpenAI Zotero plugin helper exists at `<plugin-root>/skills/zotero/scripts/zotero.py`, run its `status --json` first and prefer its `search`, `children`, `file-url`, `fulltext`, and `export-bibtex` commands for read-only discovery.
+   - If given a paper title, use the Zotero plugin helper `search "<title>" --json --with-bibtex-keys` when available; otherwise use `scripts/zotero_title_search.py`. Resolve exactly one high-confidence Zotero item key before continuing; if ambiguous, ask for the item key.
+   - Use `scripts/zotero_local_lookup.py` to save `source/zotero_item.json`, `source/zotero_children.json`, and `source/zotero_lookup.json`. The Zotero plugin helper may supplement this with `children` and `file-url`, but it does not replace the package-local raw JSON provenance files.
    - If there is one PDF, use it. If there are no PDFs, stop. If there are multiple PDFs, list candidates and require an `attachment_key`.
    - If given a local PDF, require or create `metadata.yaml`; do not prepare Zotero writes unless an item key is supplied.
 
@@ -97,6 +99,7 @@ Build one Chinese literature guide package for one paper at a time. Treat batch 
    - Default attachment mode is stored attachment. Linked attachment is optional.
    - After explicit user confirmation, execute the attach route in `references/zotero_contract.md#confirmed-attachment-execution`.
    - For existing Zotero items, use the verified Better BibTeX/ztoolkit debug bridge route after local API preflight. Do not start with `/connector/saveAttachment`; it depends on an active Connector save session and is only appropriate for just-saved items.
+   - Do not treat the OpenAI Zotero plugin helper `import-bibtex` / `import-ris` commands as a guide attachment route. They import reference records into the selected Zotero target; they do not attach a local `literature_guide.pdf` to an existing parent item with title/tag/hash verification.
    - Start Zotero from its installation directory as the process working directory when bridge writes are needed. Do not use hidden-window/background starts that leave the local API or bridge half-loaded.
    - For the debug bridge, fully stop Zotero before writing `extensions.zotero.debug-bridge.password`; then start Zotero, wait for local API and bridge readiness, and trigger the `zotero://ztoolkit-debug` URL.
    - Use `curl.exe` or Python `urllib` for Zotero local API checks on Windows. Avoid PowerShell `Invoke-WebRequest`.

@@ -32,6 +32,19 @@ Default read route:
 http://127.0.0.1:23119/api/users/0
 ```
 
+If the OpenAI Zotero plugin is installed, prefer its helper for readiness and read-only discovery:
+
+```text
+<plugin-root>/skills/zotero/scripts/zotero.py status --json
+<plugin-root>/skills/zotero/scripts/zotero.py search "<query>" --json --with-bibtex-keys
+<plugin-root>/skills/zotero/scripts/zotero.py children <item_key> --json
+<plugin-root>/skills/zotero/scripts/zotero.py file-url <attachment_key>
+<plugin-root>/skills/zotero/scripts/zotero.py fulltext <attachment_key> --out <file>
+<plugin-root>/skills/zotero/scripts/zotero.py export-bibtex --item-key <item_key>
+```
+
+Resolve `<plugin-root>` from the installed Codex plugin cache or from the active plugin skill path. Treat the helper as a stable wrapper around Zotero Desktop's local API and connector server. Still save package-local `source/zotero_item.json`, `source/zotero_children.json`, and `source/zotero_lookup.json`; the helper supplements provenance but does not replace those files.
+
 Use this local API for item and child attachment lookup:
 
 ```text
@@ -68,6 +81,30 @@ resolve file:/// enclosure URLs to local paths
 fallback to zotero_data_dir/storage/<attachment_key>/<filename>
 emit zotero_lookup.json
 ```
+
+Current OpenAI Zotero plugin helper capabilities that are useful here:
+
+```text
+status/probe local API and Connector readiness
+enable local API preference and restart Zotero, with user-approved write semantics
+search local library by title/query
+list children for an item
+return a local file URL for an attachment
+read indexed attachment full text
+export BibTeX and render citations
+import BibTeX/RIS records into the currently selected Zotero target
+```
+
+Current OpenAI Zotero plugin helper limits:
+
+```text
+it does not create a stored file attachment under an arbitrary existing parent item
+it does not set the guide attachment title to 文献导读.pdf
+it does not add codex-literature-guide / guide-needs-review tags to a guide PDF
+it does not verify Zotero storage SHA256 against the package PDF
+```
+
+Therefore the helper can replace many read-only checks, but it does not replace the confirmed guide-PDF attach route.
 
 ## Metadata Priority
 
@@ -238,8 +275,9 @@ Preferred safe order:
 2. Check duplicate guide attachments before writing. Detect by title `文献导读.pdf`, filename `literature_guide.pdf`, tag `codex-literature-guide`, or known attachment key from the manifest.
 3. Confirm eligibility from `attachment_manifest.json` and validation output.
 4. For an existing Zotero item, go directly to the verified Better BibTeX/ztoolkit debug bridge route. `/connector/saveAttachment` depends on an active Connector save session and is suitable only for just-saved items, not for attaching a file to an arbitrary existing item.
-5. If experimenting with Connector routes for a just-saved item, treat `/connector/saveAttachment` `SESSION_NOT_FOUND`, or `/connector/saveItems` success without a new stored child attachment, as failure.
-6. Verify through Zotero local API and file hash before reporting success.
+5. Do not use the OpenAI Zotero plugin helper `import-bibtex` or `import-ris` commands for guide attachment. They import reference records into the selected Zotero target; they do not attach `literature_guide.pdf` to the existing parent item.
+6. If experimenting with Connector routes for a just-saved item, treat `/connector/saveAttachment` `SESSION_NOT_FOUND`, or `/connector/saveItems` success without a new stored child attachment, as failure.
+7. Verify through Zotero local API and file hash before reporting success.
 
 ### Verified Better BibTeX bridge route
 
