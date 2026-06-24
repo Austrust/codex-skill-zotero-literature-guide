@@ -10,6 +10,12 @@ import sys
 from pathlib import Path
 
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+
 REQUIRED_BLOCK_LABELS = ("原文", "翻译", "讲解")
 FORBIDDEN_PLACEHOLDERS = (
     "原文定位 + 中文释义 + 讲解",
@@ -46,6 +52,12 @@ FORBIDDEN_HINTS = (
     "EPV",
 )
 FORBIDDEN_TRANSLATION_META_PHRASES = (
+    "这里说明",
+    "这里给出推论",
+    "这里用方程或变量关系说明",
+    "技术锚点保留为",
+    "局部锚点",
+    "本处原文线索",
     "本段的技术意译",
     "技术意译",
     "作者在这里围绕",
@@ -55,13 +67,36 @@ FORBIDDEN_TRANSLATION_META_PHRASES = (
     "本段的作用",
     "中文释义",
 )
+STRICT_TRANSLATION_META_PHRASES = (
+    "\u672c\u6bb5",
+    "\u8be5\u6bb5",
+    "\u8fd9\u4e00\u6bb5",
+    "\u672c\u6587\u6bb5",
+    "\u672c\u6bb5\u8bf4\u660e",
+    "\u672c\u6bb5\u7684\u4f5c\u7528",
+    "\u6280\u672f\u610f\u8bd1",
+    "\u610f\u8bd1",
+    "\u6982\u62ec\u5982\u4e0b",
+    "\u53ef\u6982\u62ec\u4e3a",
+    "\u603b\u7ed3\u5982\u4e0b",
+    "\u672c\u6bb5\u603b\u7ed3",
+    "\u9605\u8bfb\u63d0\u793a",
+    "\u53ef\u7406\u89e3\u4e3a",
+    "\u4f5c\u8005\u5728\u8fd9\u91cc",
+    "\u56f4\u7ed5",
+)
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", flags=re.DOTALL)
 IMAGE_LINK_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 ASSET_ID_RE = re.compile(r"\b(?:equation|image|table)_\d{3,}\b")
 CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+REFERENCE_ANCHOR_RE = re.compile(
+    r"\b(?:Fig(?:ure)?s?|Table|Eq(?:uation)?s?)\.?\s*\(?[0-9]+[A-Za-z]?\)?|\([0-9]{1,3}[a-z]?\)"
+)
+SYMBOL_ANCHOR_RE = re.compile(r"\b(?:Re|Ha|Gr|Pr|Ra|Ro|Rm|St|Nu|Pe|MHD|DNS|LES|PIV|UIV)\b")
 FORMULA_OCR_TEX_HINT_RE = re.compile(
     r"(\$\$|\\begin\{|\\end\{|\\frac|\\hat|\\bar|\\mathrm|\\mathbf|\\int|\\sum|[_^]\s*\{)"
 )
+LATIN_SENTENCE_SPLIT_RE = re.compile(r"[\u4e00-\u9fff。！？；，、]+")
 
 
 SOURCE_TEXT_KEYS = ("text", "original", "original_text", "source_text", "paragraph", "content")
@@ -197,6 +232,68 @@ def significant_latin_words(text: str) -> list[str]:
         seen.add(word)
         words.append(word)
     return words
+
+
+def cjk_char_count(text: str) -> int:
+    return len(CJK_RE.findall(text))
+
+
+def sentence_like_count(text: str) -> int:
+    return len(re.findall(r"[。！？!?；;]", text))
+
+
+def latin_word_count(text: str) -> int:
+    return len(LATIN_WORD_RE.findall(text))
+
+
+def long_latin_runs(text: str, min_words: int = 8) -> list[str]:
+    runs: list[str] = []
+    for segment in LATIN_SENTENCE_SPLIT_RE.split(text):
+        words = LATIN_WORD_RE.findall(segment)
+        if len(words) >= min_words:
+            cleaned = " ".join(segment.split())
+            if cleaned:
+                runs.append(cleaned[:180])
+    return runs
+
+
+def source_reference_anchors(text: str) -> list[str]:
+    seen: set[str] = set()
+    anchors: list[str] = []
+    for match in REFERENCE_ANCHOR_RE.findall(text):
+        value = " ".join(match.split())
+        if value and value not in seen:
+            seen.add(value)
+            anchors.append(value)
+    return anchors
+
+
+def source_symbol_anchors(text: str) -> list[str]:
+    seen: set[str] = set()
+    anchors: list[str] = []
+    for match in SYMBOL_ANCHOR_RE.findall(text):
+        if match and match not in seen:
+            seen.add(match)
+            anchors.append(match)
+    return anchors
+
+
+def anchor_present_in_translation(anchor: str, translation: str) -> bool:
+    if anchor in translation:
+        return True
+    number_match = re.search(r"[0-9]+[A-Za-z]?", anchor)
+    if not number_match:
+        return True
+    raw_number = number_match.group(0)
+    candidate_numbers = {raw_number, raw_number.replace("O", "0").replace("o", "0")}
+    number = "|".join(re.escape(item) for item in sorted(candidate_numbers, key=len, reverse=True))
+    if re.search(r"\bfig", anchor, flags=re.IGNORECASE):
+        return re.search(rf"图\s*[\(（]?\s*{number}\s*[\)）]?", translation) is not None
+    if re.search(r"\btable", anchor, flags=re.IGNORECASE):
+        return re.search(rf"表\s*[\(（]?\s*{number}\s*[\)）]?", translation) is not None
+    if re.search(r"\beq", anchor, flags=re.IGNORECASE):
+        return re.search(rf"(?:式|方程|公式)\s*[\(（]?\s*{number}\s*[\)）]?|[\(（]\s*{number}\s*[\)）]", translation) is not None
+    return False
 
 
 def source_overlap_ok(source: str, original: str) -> bool:
@@ -340,6 +437,7 @@ def validate(
     allow_latex_formula_assets: bool,
     require_image_captions: bool,
     formula_latex_report_path: Path | None = None,
+    strict_translation_fidelity: bool = False,
 ) -> tuple[str, list[str], list[str]]:
     guide = guide_path.read_text(encoding="utf-8")
     expected_records = load_expected_records(index_path)
@@ -395,6 +493,50 @@ def validate(
                 errors.append(f"{pid} translation block contains meta-summary phrase instead of faithful translation: {phrase}")
         if len(visible_text(source_text)) >= 400 and len(translation_visible) < 80:
             warnings.append(f"{pid} translation block is very short for a long source paragraph; check that it is not a summary")
+        source_visible = visible_text(source_text)
+        source_word_count = len(LATIN_WORD_RE.findall(source_visible))
+        translation_cjk_count = cjk_char_count(translation_visible)
+        translation_latin_count = latin_word_count(translation_visible)
+        if strict_translation_fidelity:
+            for phrase in STRICT_TRANSLATION_META_PHRASES:
+                if phrase in translation_visible:
+                    errors.append(f"{pid} strict translation fidelity: translation block contains review/meta wording, not only translation: {phrase}")
+            copied_runs = long_latin_runs(translation_visible)
+            if copied_runs:
+                errors.append(
+                    f"{pid} strict translation fidelity: translation block appears to contain copied English source sentence(s): "
+                    + " | ".join(copied_runs[:3])
+                )
+            if (
+                source_word_count >= 25
+                and translation_latin_count > max(24, int(max(translation_cjk_count, 1) * 0.35))
+            ):
+                errors.append(
+                    f"{pid} strict translation fidelity: translation contains too much source-language English "
+                    f"(latin_words={translation_latin_count}, cjk_chars={translation_cjk_count}); likely bilingual commentary or copied source"
+                )
+            if source_word_count >= 80 and translation_cjk_count < max(60, int(source_word_count * 0.45)):
+                errors.append(
+                    f"{pid} strict translation fidelity: translation is too short for the source paragraph "
+                    f"(source_words={source_word_count}, cjk_chars={translation_cjk_count}); likely summary/compression"
+                )
+            elif source_word_count >= 80 and translation_cjk_count < int(source_word_count * 0.65):
+                warnings.append(
+                    f"{pid} strict translation fidelity: translation may be compressed "
+                    f"(source_words={source_word_count}, cjk_chars={translation_cjk_count})"
+                )
+            if source_word_count >= 60 and sentence_like_count(translation_visible) <= 1:
+                warnings.append(f"{pid} strict translation fidelity: long source has one-sentence translation; check for summary")
+            missing_refs = [
+                anchor
+                for anchor in source_reference_anchors(source_visible)
+                if not anchor_present_in_translation(anchor, translation_visible)
+            ]
+            if missing_refs:
+                warnings.append(f"{pid} strict translation fidelity: source figure/table/equation/reference anchors missing from translation: {missing_refs[:8]}")
+            missing_symbols = [anchor for anchor in source_symbol_anchors(source_visible) if anchor not in translation_visible]
+            if missing_symbols:
+                warnings.append(f"{pid} strict translation fidelity: source technical symbols/acronyms missing from translation: {missing_symbols[:12]}")
         original_visible = visible_text(original)
         if len(original_visible) < 30:
             errors.append(f"{pid} original block is too short or missing actual source text")
@@ -529,6 +671,7 @@ def main() -> int:
     )
     parser.add_argument("--formula-latex-report", type=Path, help="JSON report from validate_formula_latex.py; passing formulas must be embedded as LaTeX and failed formulas must not")
     parser.add_argument("--require-image-captions", action="store_true", help="require image/table assets to have source caption, Chinese caption translation, and caption explanation after the image")
+    parser.add_argument("--strict-translation-fidelity", action="store_true", help="warn/error on translation blocks that look compressed, meta-explanatory, or missing source anchors")
     parser.add_argument("--json", action="store_true", help="print JSON report")
     args = parser.parse_args()
 
@@ -543,6 +686,7 @@ def main() -> int:
         args.allow_latex_formula_assets,
         args.require_image_captions,
         args.formula_latex_report,
+        args.strict_translation_fidelity,
     )
     report = {"status": status, "errors": errors, "warnings": warnings}
     if args.json:

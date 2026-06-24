@@ -13,6 +13,7 @@ import json
 import re
 import subprocess
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +35,19 @@ FORBIDDEN_READING_BODY_PHRASES = {
     "generation_note": "生成说明",
     "local_ollama": "本地 Ollama",
 }
+
+GENERIC_EXPLANATION_PHRASES = (
+    "这一段承接所在小节",
+    "这一节建立",
+    "这一节把前面",
+    "这一节固定",
+    "引言通过两类实验",
+    "阅读时要特别跟踪",
+    "主要服务于",
+    "不是背景细节",
+    "该处同时服务于",
+    "二维性在文中被分成",
+)
 
 DEFAULT_SKILL_ROOT = Path(__file__).resolve().parents[1]
 IMAGE_LINK_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
@@ -151,6 +165,100 @@ class Harness:
             self.add("error", "non_utf8_markdown", f"Markdown must be UTF-8, found {encoding}", path)
         return text
 
+    def extract_label_blocks(self, guide: str, label: str) -> list[str]:
+        label_re = re.compile(rf"^{re.escape(label)}\s*(.*)$")
+        stop_re = re.compile(
+            r"^(?:"
+            r"\*\*(?:P\d{3,}|原文|翻译|讲解|图注原文|图注翻译|图注讲解)：?\*\*"
+            r"|<a id="
+            r"|#{1,6}\s+"
+            r"|!\["
+            r")"
+        )
+        blocks: list[str] = []
+        current: list[str] | None = None
+        for line in guide.splitlines():
+            match = label_re.match(line)
+            if match:
+                if current is not None:
+                    blocks.append(" ".join(" ".join(current).split()))
+                current = [match.group(1).strip()]
+                continue
+            if current is None:
+                continue
+            if not line.strip():
+                blocks.append(" ".join(" ".join(current).split()))
+                current = None
+                continue
+            if stop_re.match(line):
+                blocks.append(" ".join(" ".join(current).split()))
+                current = None
+                continue
+            current.append(line.strip())
+        if current is not None:
+            blocks.append(" ".join(" ".join(current).split()))
+        return blocks
+
+    def check_explanation_quality(self, guide: str, expected_count: int) -> None:
+        explanations = self.extract_label_blocks(guide, CHINESE_LABELS["explanation"])
+        counts = Counter(explanations)
+        repeated = [
+            {"count": count, "text": text[:160]}
+            for text, count in counts.most_common()
+            if text and count > 1
+        ]
+        empty_count = counts.get("", 0)
+        generic_count = sum(
+            1
+            for text in explanations
+            if any(phrase in text for phrase in GENERIC_EXPLANATION_PHRASES)
+        )
+        total = len(explanations)
+        unique_nonempty = len([text for text in counts if text])
+        unique_ratio = unique_nonempty / total if total else 1.0
+        generic_ratio = generic_count / total if total else 0.0
+        max_repeat = repeated[0]["count"] if repeated else 1
+        self.metrics["explanation_quality"] = {
+            "paragraph_explanation_blocks": total,
+            "expected_paragraph_explanations": expected_count,
+            "empty_count": empty_count,
+            "unique_nonempty_count": unique_nonempty,
+            "unique_ratio": round(unique_ratio, 3),
+            "generic_phrase_count": generic_count,
+            "generic_phrase_ratio": round(generic_ratio, 3),
+            "max_repeat": max_repeat,
+            "top_repeated": repeated[:5],
+        }
+        if total != expected_count:
+            self.add(
+                "warning",
+                "explanation_block_count_mismatch",
+                "Extracted paragraph explanation block count differs from guided paragraph count.",
+                self.package / "literature_guide.md",
+                {"explanations": total, "guided": expected_count},
+            )
+        if empty_count:
+            self.add(
+                "error",
+                "empty_explanation_blocks",
+                "Some paragraph explanation blocks are empty.",
+                self.package / "literature_guide.md",
+                {"empty_count": empty_count},
+            )
+        if total and (unique_ratio < 0.8 or max_repeat >= 3 or generic_ratio > 0.35):
+            self.add(
+                "error",
+                "low_information_explanations",
+                "Paragraph explanations look repetitive or template-like; review content depth before marking the package ready.",
+                self.package / "literature_guide.md",
+                {
+                    "unique_ratio": round(unique_ratio, 3),
+                    "max_repeat": max_repeat,
+                    "generic_phrase_ratio": round(generic_ratio, 3),
+                    "top_repeated": repeated[:3],
+                },
+            )
+
     def run(self) -> dict[str, Any]:
         self.check_location()
         self.check_required_layout()
@@ -265,6 +373,8 @@ class Harness:
             self.add("error", "guided_ids_missing_in_markdown", "Guided paragraphs missing from Markdown.", detail=missing_in_md)
         if extra_in_md:
             self.add("error", "markdown_ids_not_guided", "Markdown contains paragraph IDs not marked for guide.", detail=extra_in_md)
+
+        self.check_explanation_quality(guide, len(guided))
 
         if isinstance(status, dict):
             self.metrics["status_paragraphs_guided"] = status.get("paragraphs_guided")
@@ -530,6 +640,7 @@ class Harness:
             "--require-compact-blocks",
             "--require-inline-assets",
             "--require-image-captions",
+            "--strict-translation-fidelity",
             "--allow-latex-formula-assets",
             "--json",
         ]
@@ -566,9 +677,39 @@ class Harness:
         has_report = bool(str(nested.get("report_path") or "").strip())
         return has_identity and has_time and (has_scope or has_ranges or has_report)
 
+    def translation_fidelity_review_passed(self, status: dict[str, Any]) -> bool:
+        explicit = str(
+            status.get("translation_fidelity_status")
+            or status.get("translation_fidelity_review_status")
+            or ""
+        ).strip().lower()
+        if explicit in {"pass", "passed", "reviewed", "codex-reviewed", "subagent-reviewed", "human-reviewed"}:
+            return True
+        nested = status.get("content_review")
+        if not isinstance(nested, dict) or not self.content_review_passed(status):
+            return False
+        review_text = " ".join(
+            str(nested.get(key) or "")
+            for key in ("scope", "method", "notes", "report_path", "reviewer")
+        ).lower()
+        fidelity_terms = (
+            "translation fidelity",
+            "source fidelity",
+            "faithful",
+            "faithfulness",
+            "忠实",
+            "忠于原文",
+            "原文忠实",
+            "逐段重译",
+            "逐句",
+            "subagent",
+        )
+        return any(term.lower() in review_text for term in fidelity_terms)
+
     def check_stage_files(self, status: Any) -> None:
         if self.stage in {"rendered", "pre-attach"}:
             self.require_file("literature_guide.pdf")
+            self.check_render_freshness()
         if self.stage == "pre-attach":
             manifest, _ = self.read_json_auto("attachment_manifest.json")
             if isinstance(manifest, dict) and manifest.get("status") != "ready_to_attach":
@@ -598,6 +739,39 @@ class Harness:
                         self.package / "status.json",
                         {"translation_model": status.get("translation_model")},
                     )
+                fidelity_reviewed = self.translation_fidelity_review_passed(status)
+                self.metrics["translation_fidelity_review_passed"] = fidelity_reviewed
+                if not fidelity_reviewed:
+                    self.add(
+                        "error",
+                        "translation_fidelity_review_missing",
+                        "Pre-attach requires explicit source-faithfulness review evidence for paragraph translations.",
+                        self.package / "status.json",
+                        {
+                            "required_evidence": "content_review scope/report mentions translation fidelity, source fidelity, faithful translation, 忠实, 忠于原文, 逐句, or subagent; or translation_fidelity_status=pass"
+                        },
+                    )
+
+    def check_render_freshness(self) -> None:
+        guide_path = self.package / "literature_guide.md"
+        pdf_path = self.package / "literature_guide.pdf"
+        if not guide_path.exists() or not pdf_path.exists():
+            return
+        guide_mtime = guide_path.stat().st_mtime
+        pdf_mtime = pdf_path.stat().st_mtime
+        self.metrics["render_freshness"] = {
+            "markdown_updated_at": datetime.fromtimestamp(guide_mtime).isoformat(timespec="seconds"),
+            "pdf_updated_at": datetime.fromtimestamp(pdf_mtime).isoformat(timespec="seconds"),
+            "pdf_is_current": pdf_mtime + 1 >= guide_mtime,
+        }
+        if pdf_mtime + 1 < guide_mtime:
+            self.add(
+                "error",
+                "stale_rendered_pdf",
+                "literature_guide.pdf is older than literature_guide.md; rerender the PDF before marking rendered/pre-attach pass.",
+                pdf_path,
+                self.metrics["render_freshness"],
+            )
 
     def report(self) -> dict[str, Any]:
         severity_order = {"error": 3, "warning": 2, "info": 1}

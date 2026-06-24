@@ -97,7 +97,7 @@ Pre-render hard gate:
 ```text
 If any guide-worthy paragraph has no actual original text in `原文`, stop.
 If the guide tells the reader that paragraph originals are not repeated, stop.
-If any `翻译` block is a summary, technical paraphrase, section-level note, or contains meta phrases such as `本段的技术意译`, `作者在这里围绕`, `本段说明`, or `这一段的作用`, stop and rewrite it as a true translation.
+If any `翻译` block is a summary, technical paraphrase, section-level note, copied English source sentence, or contains meta phrases such as `这里说明`, `这里给出推论`, `这里用方程或变量关系说明`, `技术锚点保留为`, `本段的技术意译`, `作者在这里围绕`, `本段说明`, or `这一段的作用`, stop and rewrite it as a true translation.
 If a paragraph uses separate mini-sections `**原文**`, `**翻译**`, and `**讲解**` instead of compact labels `**原文：**`, `**翻译：**`, and `**讲解：**`, stop unless the user explicitly requested a spacious layout.
 If a paragraph ID is written as `### P001`, stop.
 If required source figures/tables/formulas are available as assets but not embedded in `literature_guide.md`, stop.
@@ -191,7 +191,18 @@ The overall guide may summarize key figures/formulas, but it must not be the onl
 
 ## Translation Rules
 
-The `翻译` block is a true translation of the full `原文` block. It is not a summary, not a technical paraphrase, and not a section-level interpretation.
+The `翻译` block is a true translation of the full `原文` block. It is not a summary, not a technical paraphrase, not a section-level interpretation, and not a bilingual commentary. Keep English only for necessary terms, symbols, acronyms, equation/figure/table labels, names, and citation markers; never copy a full English source sentence into `翻译`.
+
+### Source-Fidelity Review Gate
+
+Before a guide can be considered final, rendered-ready, or Zotero-attach-ready, run a dedicated source-fidelity review of paragraph translations.
+
+- Use a subagent for this review when subagents are available. Give it the package path and require direct comparison of every guide-worthy `原文`/`翻译` pair.
+- The reviewer must verify that the translation preserves every source sentence or clause-level claim, condition, caveat, contrast word, variable, formula reference, figure/table reference, citation marker, and equation number.
+- The reviewer must rewrite unfaithful translation blocks or list them as blockers. Do not defer a known mismatch to `讲解`.
+- Save review evidence as `context/translation_fidelity_report.md` or `context/translation_revision_report.md`, listing paragraph ranges/IDs reviewed, high-risk paragraphs corrected, and any remaining source/OCR uncertainty.
+- Record the gate in `status.json` with `translation_fidelity_status: "pass"` or a `content_review` object whose `scope` or `report_path` clearly mentions source fidelity, faithful translation, 忠于原文, 逐句, or subagent review.
+- Do not prepare an attachment manifest or attach to Zotero if this evidence is absent.
 
 By default, Codex should author the final paragraph translations and explanations batch by batch. A local/external model such as Ollama may be used only when the user explicitly chooses draft-mode generation. Draft-mode model output must:
 
@@ -205,7 +216,8 @@ By default, Codex should author the final paragraph translations and explanation
 - Keep formulas, variables, citations, equation numbers, figure/table references, and symbols consistent.
 - Split long English sentences into natural Chinese when needed, but preserve the logical relations and qualifiers.
 - Do not add conclusions absent from the source paragraph.
-- Do not put explanation phrases in `翻译`, such as `本段的技术意译是`, `本段说明`, `作者在这里围绕`, `这一段的作用`, or `本段是一个短的过渡`.
+- Do not put explanation phrases in `翻译`, such as `这里说明`, `这里给出推论`, `这里用方程或变量关系说明`, `技术锚点保留为`, `本段的技术意译是`, `本段说明`, `作者在这里围绕`, `这一段的作用`, or `本段是一个短的过渡`.
+- Do not leave source-language sentence fragments in `翻译`. A valid translation may retain terms such as `Hartmann number`, `MHD`, `Kulikovskii`, `Fig. 1`, `Eq. (2)`, `M`, or `B`; it must not contain a six-word-or-longer English sentence run copied from the source.
 - If a paragraph is long, the translation should also be long enough to cover it; do not compress it into a reading note.
 - Put summaries, implications, reading advice, and conceptual simplification only in `讲解`.
 - Follow `preferred_terms.yaml` when provided.
@@ -224,6 +236,12 @@ formula/table/figure function
 easy misunderstandings
 why it matters for understanding the paper
 ```
+
+Each explanation must be specific to its own paragraph. It should usually mention at least one local anchor from the paragraph: a concrete claim, contrast, condition, variable, equation, figure/table reference, experimental fact, inference step, or caveat. It must not be only a section summary or reading instruction.
+
+Do not mass-produce explanations by joining a section-level sentence with keyword snippets. Repeated explanations such as "the introduction contrasts two kinds of experiments" or "this section establishes the governing equations" are acceptable once as a section orientation, but not as paragraph-by-paragraph explanations.
+
+The harness records `explanation_quality` metrics. A `low_information_explanations` warning means the paragraph guide is not final-quality prose. Keep the package `needs-review` and rewrite the affected batches before treating it as ready for attachment.
 
 Do not turn the guide into the user's project analysis.
 
