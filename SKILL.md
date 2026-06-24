@@ -17,6 +17,7 @@ Build one Chinese literature guide package for one paper at a time. Treat batch 
 - Restore the paper's source order for figures, tables, and displayed formulas inside the paragraph guide. Do not move all visual/formula assets into a front-loaded gallery when `content_list.json` provides their order.
 - Preserve the actual original paragraph text in the guide. Do not replace original text with a pointer to `paragraph_index.json` or the source PDF.
 - The `翻译` block must be a faithful translation of the full `原文` paragraph, not a summary, technical paraphrase, or section-level interpretation. Put compression and explanation only in `讲解`.
+- Treat translation fidelity as a hard production gate. For final guide packages, run an independent source-faithfulness pass after drafting or revision, preferably by a subagent when subagents are available, and record the evidence in `context/translation_fidelity_report.md` or `context/translation_revision_report.md`.
 - Insert source figures, tables, and displayed formulas into the guide PDF when they are needed for reading. Displayed formulas default to MinerU-recognized LaTeX after a formula compile gate; use source-derived formula images only as per-formula fallback when recognition is missing or validation fails. Do not leave final guide content as "check the PDF" unless extraction truly failed and validation is `warn` or `fail`.
 - Keep the PDF table of contents clean. Paragraph IDs such as `P001` must not appear as TOC entries.
 - On Windows/PowerShell, protect UTF-8 Chinese text explicitly. Terminal mojibake is not proof of file corruption, but non-UTF-8 PowerShell stdin can corrupt Chinese text before Python receives it.
@@ -25,8 +26,10 @@ Build one Chinese literature guide package for one paper at a time. Treat batch 
 - Codex should draft the final paragraph translations/explanations by default. Do not route paragraph prose through Ollama or another external/local model unless the user explicitly asks for draft-mode generation; such output must remain `needs-review`.
 - Treat `scripts/literature_guide_harness.py` as the package gate after indexing, after Markdown assembly, after rendering, and before any Zotero write.
 - In batch runs, subagents may only generate local `outputs/<item_key>/` packages. Judge completion by `status.json`, `attachment_manifest.json`, and harness reports, not by subagent IDs or heartbeat status.
+- For literature processing that drafts, revises, or audits paragraph translations, use a subagent as the default second pass when available. The subagent must compare `鍘熸枃` against `缈昏瘧`, rewrite unfaithful translation blocks, and report paragraph IDs reviewed; do not let the main agent's first draft be the only fidelity check.
 - Stop heartbeat/monitor agents as soon as all active package agents are complete or blocked at a user decision gate. Do not keep reminder loops alive after the work has reached `ready`, `duplicate`, `PDF gate`, or `needs user decision`.
-- If the OpenAI Zotero plugin helper is installed, reuse it for Zotero readiness, library search, children listing, attachment file URLs, indexed full text, BibTeX export, and connector record import. Do not use it as the final guide-PDF attachment writer unless it explicitly supports stored-file attachment creation, title/tag updates, and post-write verification.
+- If the Zotero Guide Helper plugin is installed, use it as the default confirmed guide-PDF attachment writer. It must create a stored `literature_guide.pdf` child, set title `文献导读.pdf`, add the default tags, reject duplicates by default, and return enough data for SHA256 verification.
+- Keep the OpenAI Zotero plugin helper for Zotero readiness, library search, children listing, attachment file URLs, indexed full text, BibTeX export, and connector record import; do not confuse it with the Zotero Guide Helper write-back plugin.
 
 ## Workflow
 
@@ -68,6 +71,7 @@ Build one Chinese literature guide package for one paper at a time. Treat batch 
    - Read `references/guide_contract.md` before drafting.
    - Draft the overall guide first: metadata, one-sentence summary, problem, reading roadmap, methods, assumptions, findings, figures, formulas, glossary.
    - Draft paragraph-by-paragraph content in batches by section and paragraph range.
+   - After each drafting or revision pass, run an independent translation-fidelity pass. When subagents are available, delegate this pass to a subagent with only the package path and fidelity criteria; require it to compare every guide-worthy `鍘熸枃`/`缈昏瘧` pair, rewrite or list unfaithful blocks, and save `context/translation_fidelity_report.md` or `context/translation_revision_report.md`.
    - Default to Codex-authored translation/explanation batches. If a local model cache is used with explicit user approval, record `translation_model`, keep the package `needs-review`, and do not put model provenance in reader-facing `literature_guide.md`.
    - Use compact paragraph labels by default: `**原文：** ...`, `**翻译：** ...`, `**讲解：** ...`. Do not use separate mini-sections for these three labels unless the user explicitly asks for a spacious layout.
    - Before inserting displayed formulas, run `scripts/validate_formula_latex.py --asset-manifest <package>/asset_manifest.json --json-output <package>/formula_latex_validation.json`.
@@ -75,6 +79,9 @@ Build one Chinese literature guide package for one paper at a time. Treat batch 
    - For each inserted figure or table, place its source caption immediately after the image, followed by a faithful Chinese caption translation and a short caption explanation. Use compact labels: `**图注原文：**`, `**图注翻译：**`, and `**图注讲解：**`.
    - Save figure/table caption translations and explanations in `figure_caption_annotations.json` when using `scripts/build_compact_inline_guide.py`; do not rely on image links alone to carry figure meaning.
    - For each paragraph, translate the whole original paragraph faithfully before writing the explanation; do not generate template phrases such as "本段的技术意译" or "作者在这里围绕" in the translation block.
+   - For each paragraph explanation, write paragraph-specific content. Do not reuse section-level templates such as "this section establishes..." or "the introduction contrasts two experiments" across multiple paragraphs. The explanation must name the paragraph's own claim, equation/figure/table role, variable/condition, local transition, or likely misunderstanding.
+   - After drafting, inspect the harness `explanation_quality` metrics. If `low_information_explanations`, empty explanations, or repeated/template-like explanation warnings appear, rewrite the affected explanation batches and keep the package `needs-review` until the warning is cleared or explicitly accepted as a non-final draft.
+   - Also inspect translation-fidelity warnings from `validate_guide.py --strict-translation-fidelity`. If long source paragraphs have compressed translations, meta-commentary appears in `缈昏瘧`, or figure/table/equation anchors are missing from translations, rewrite the affected batches before rendering.
    - Default batch size: 8-12 natural paragraphs, or 3000-5000 English words. Very long paragraphs remain intact.
    - Pass each batch global context, section context, local paragraphs, and continuity state.
    - Maintain `context/term_glossary.json`; allow `preferred_terms.yaml` to override automatic terminology.
@@ -82,10 +89,12 @@ Build one Chinese literature guide package for one paper at a time. Treat batch 
 6. Validate and render.
    - Before validation, run `scripts/clean_guide_markdown.py --guide <package>/literature_guide.md --asset-manifest <package>/asset_manifest.json --in-place --report <package>/guide_cleanup_report.json` to remove hidden HTML comments and clear formula image captions created by renderer or encoding workarounds.
    - Run `scripts/validate_guide.py` on `literature_guide.md` and `paragraph_index.json`.
+   - For production guides, include `--strict-translation-fidelity` and treat its errors as blockers. Warnings require either rewriting the affected translation blocks or recording a paragraph-level justification in the fidelity report.
    - In production, also pass `--asset-manifest <package>/asset_manifest.json --require-embedded-assets` so available source figures/tables/formulas must be embedded before rendering.
    - Run `scripts/literature_guide_harness.py` with `--run-validator` after Markdown assembly; use `--stage draft`, `--stage rendered`, or `--stage pre-attach` for the current gate.
+   - Pre-attach harness now requires explicit translation-fidelity review evidence in `status.json`: set `translation_fidelity_status` to `pass`, or make `content_review.scope/report_path` clearly mention source fidelity, faithful translation, 忠于原文, 逐句, or subagent review.
    - Production output remains `literature_guide.md` and `literature_guide.pdf`; if a test variant such as `literature_guide_compact_inline.md` is generated, substitute that actual guide path in every cleanup, validation, render, and report command.
-   - If validation or harness fails, do not render, prepare an attach manifest, or attach until fixed. If harness warns only because an external/local model cache was used, keep `needs-review` and require evidence-bearing Codex/human `content_review` before final attach.
+   - If validation or harness fails, do not render, prepare an attach manifest, or attach until fixed. If harness warns about low-information paragraph explanations, rewrite the prose before promoting the package. If harness warns only because an external/local model cache was used, keep `needs-review` and require evidence-bearing Codex/human `content_review` before final attach.
    - Read `references/windows_powershell_contract.md` before generating Chinese files or rendering PDFs from PowerShell.
    - Render TOC with a depth that excludes paragraph IDs, or use non-heading paragraph labels so P IDs do not enter the TOC.
    - Render `literature_guide.pdf` with plain academic styling. Keep `literature_guide.md` as the editable local source.
@@ -97,16 +106,15 @@ Build one Chinese literature guide package for one paper at a time. Treat batch 
    - In batch mode, first produce a decision table of `ready`, `warn`, `duplicate gate`, and `PDF gate`; attach only the item keys the user explicitly approves.
    - Default Zotero attachment is only `literature_guide.pdf`, titled `文献导读.pdf`.
    - Default attachment mode is stored attachment. Linked attachment is optional.
-   - After explicit user confirmation, execute the attach route in `references/zotero_contract.md#confirmed-attachment-execution`.
-   - For existing Zotero items, use the verified Better BibTeX/ztoolkit debug bridge route after local API preflight. Do not start with `/connector/saveAttachment`; it depends on an active Connector save session and is only appropriate for just-saved items.
+   - After explicit user confirmation, execute the plugin-first attach route in `references/zotero_contract.md#confirmed-attachment-execution`.
+   - First check `GET http://127.0.0.1:23119/guide-helper/health`. If it returns `plugin=zotero-guide-helper`, attach with `scripts/zotero_guide_helper_attach.py --manifest <package>/attachment_manifest.json` and verify the generated report.
+   - If the Zotero Guide Helper plugin is missing, recommend installing the bundled `assets/zotero-guide-helper/zotero-guide-helper.xpi` and retrying the health check. Use the Better BibTeX/ztoolkit debug bridge only when plugin installation is blocked or the user explicitly asks for the fallback.
+   - Do not start with `/connector/saveAttachment`; it depends on an active Connector save session and is only appropriate for just-saved items.
    - Do not treat the OpenAI Zotero plugin helper `import-bibtex` / `import-ris` commands as a guide attachment route. They import reference records into the selected Zotero target; they do not attach a local `literature_guide.pdf` to an existing parent item with title/tag/hash verification.
-   - Start Zotero from its installation directory as the process working directory when bridge writes are needed. Do not use hidden-window/background starts that leave the local API or bridge half-loaded.
-   - For the debug bridge, fully stop Zotero before writing `extensions.zotero.debug-bridge.password`; then start Zotero, wait for local API and bridge readiness, and trigger the `zotero://ztoolkit-debug` URL.
    - Use `curl.exe` or Python `urllib` for Zotero local API checks on Windows. Avoid PowerShell `Invoke-WebRequest`.
-   - Before writing, run duplicate checks by title `文献导读.pdf`, filename `literature_guide.pdf`, tag `codex-literature-guide`, and any prior manifest key; repeat the duplicate check inside the Zotero runtime JavaScript.
+   - Before writing, run duplicate checks by title `文献导读.pdf`, filename `literature_guide.pdf`, tag `codex-literature-guide`, and any prior manifest key; the Zotero Guide Helper repeats duplicate detection inside Zotero before import.
    - If a duplicate guide exists, stop for `replace / keep-both / cancel`. `keep-both` requires explicit approval; `keep original` or `cancel` means do not attach the new guide.
-   - If the bridge result file is not written, stop, clean the temporary password from `prefs.js`, restart Zotero cleanly, and diagnose. Do not blindly retry or report success.
-   - After writing, report success only if Zotero local API shows the new child, it is an imported/stored PDF with both tags, its storage-file SHA256 equals the package PDF, and the temporary debug bridge password is removed from `prefs.js`.
+   - After writing, report success only if Zotero local API shows the new child, it is an imported/stored PDF with both tags, and its storage-file SHA256 equals the package PDF.
    - Preserve `zotero_source_attachment_key` and `zotero_guide_attachment_key` as separate fields in `status.json` and `attachment_manifest.json`; never reuse the source PDF attachment key as the guide attachment key.
    - On confirmed attach, also add tags `codex-literature-guide` and `guide-needs-review`.
    - Do not add Zotero notes by default.
@@ -130,6 +138,7 @@ Build one Chinese literature guide package for one paper at a time. Treat batch 
 - `scripts/build_compact_inline_guide.py`: Convert an existing guide plus `paragraph_index.json`, MinerU `content_list.json`, `asset_manifest.json`, and optional `figure_caption_annotations.json` into compact paragraph blocks with figures/tables/formulas restored in source order.
 - `scripts/clean_guide_markdown.py`: Remove hidden HTML comments and formula-image caption alt text from generated guide Markdown before validation and PDF rendering.
 - `scripts/build_attachment_manifest.py`: Create a safe manifest for attaching only `literature_guide.pdf`; blocks packages that are not `ready_to_attach`, fail/warn harness without explicit acceptance, or contain unreviewed `translation_model` draft output.
+- `scripts/zotero_guide_helper_attach.py`: Preferred confirmed write-back client for the Zotero Guide Helper plugin; checks plugin health, posts `literature_guide.pdf`, verifies stored attachment metadata and SHA256, and writes `zotero_helper_attach_report.json`.
 - `scripts/zotero_local_lookup.py`: Query Zotero's local API by item key, save item/children JSON, filter PDF attachments, and resolve a source PDF path when possible.
 - `scripts/zotero_title_search.py`: Resolve a paper title to exactly one high-confidence Zotero item key through Zotero's local API before the item-key workflow.
 - `scripts/mineru_local_parse.ps1`: Smoke test or run the local MinerU `/file_parse` API with the standard production parameters for this workflow.

@@ -82,29 +82,38 @@ fallback to zotero_data_dir/storage/<attachment_key>/<filename>
 emit zotero_lookup.json
 ```
 
-Current OpenAI Zotero plugin helper capabilities that are useful here:
+There are two distinct Zotero helpers:
 
 ```text
-status/probe local API and Connector readiness
-enable local API preference and restart Zotero, with user-approved write semantics
-search local library by title/query
-list children for an item
-return a local file URL for an attachment
-read indexed attachment full text
-export BibTeX and render citations
-import BibTeX/RIS records into the currently selected Zotero target
+OpenAI Zotero plugin helper:
+  use for status/probe, title search, children listing, file-url, fulltext, BibTeX export, and BibTeX/RIS import.
+
+Zotero Guide Helper plugin:
+  use as the default confirmed guide-PDF attachment writer.
 ```
 
-Current OpenAI Zotero plugin helper limits:
+The Zotero Guide Helper plugin health endpoint is:
 
 ```text
-it does not create a stored file attachment under an arbitrary existing parent item
-it does not set the guide attachment title to 文献导读.pdf
-it does not add codex-literature-guide / guide-needs-review tags to a guide PDF
-it does not verify Zotero storage SHA256 against the package PDF
+GET http://127.0.0.1:23119/guide-helper/health
 ```
 
-Therefore the helper can replace many read-only checks, but it does not replace the confirmed guide-PDF attach route.
+Use it for write-back only when the health payload reports:
+
+```text
+ok=true
+plugin=zotero-guide-helper
+writeEnabled=true
+authRequiredForWrites=true
+```
+
+If the endpoint is missing or returns another payload, recommend installing the bundled XPI:
+
+```text
+<skill-root>/assets/zotero-guide-helper/zotero-guide-helper.xpi
+```
+
+After installation, retry the health endpoint. Use the Better BibTeX/ztoolkit debug bridge only when plugin installation is blocked or the user explicitly asks for the fallback.
 
 ## Metadata Priority
 
@@ -265,23 +274,53 @@ Keep `zotero_source_attachment_key` and `zotero_guide_attachment_key` separate e
 
 Goal: after the user explicitly confirms, attach only `literature_guide.pdf` to the Zotero parent item as a stored PDF attachment. Keep all other package files local.
 
-Preferred safe order:
+Preferred route: Zotero Guide Helper plugin.
 
-1. Verify Zotero is running and local API is reachable:
-   - `GET http://127.0.0.1:23119/connector/ping`
-   - `GET http://127.0.0.1:23119/api/users/0/items/<item_key>/children?format=json`
-   - Use `curl.exe` or Python `urllib`; avoid `Invoke-WebRequest`.
-   - Save the before-write children response under `source/`.
-2. Check duplicate guide attachments before writing. Detect by title `文献导读.pdf`, filename `literature_guide.pdf`, tag `codex-literature-guide`, or known attachment key from the manifest.
-3. Confirm eligibility from `attachment_manifest.json` and validation output.
-4. For an existing Zotero item, go directly to the verified Better BibTeX/ztoolkit debug bridge route. `/connector/saveAttachment` depends on an active Connector save session and is suitable only for just-saved items, not for attaching a file to an arbitrary existing item.
-5. Do not use the OpenAI Zotero plugin helper `import-bibtex` or `import-ris` commands for guide attachment. They import reference records into the selected Zotero target; they do not attach `literature_guide.pdf` to the existing parent item.
-6. If experimenting with Connector routes for a just-saved item, treat `/connector/saveAttachment` `SESSION_NOT_FOUND`, or `/connector/saveItems` success without a new stored child attachment, as failure.
-7. Verify through Zotero local API and file hash before reporting success.
+1. Verify Zotero is running and the Zotero Guide Helper plugin is loaded:
 
-### Verified Better BibTeX bridge route
+```powershell
+curl.exe -sS http://127.0.0.1:23119/guide-helper/health
+```
 
-Use this route only after explicit user confirmation. It modifies Zotero through Zotero's own JavaScript runtime, not by editing `zotero.sqlite` directly.
+2. If health fails or does not report `plugin=zotero-guide-helper`, recommend installing:
+
+```text
+<skill-root>/assets/zotero-guide-helper/zotero-guide-helper.xpi
+```
+
+Do not silently fall back to the debug bridge. Install the plugin first unless installation is blocked or the user explicitly requests the fallback.
+
+3. Confirm eligibility from `attachment_manifest.json`, `status.json`, and the pre-attach harness.
+4. Run duplicate preflight with the plugin list endpoint:
+
+```powershell
+curl.exe -sS "http://127.0.0.1:23119/guide-helper/items/<item_key>/guide-attachments"
+```
+
+Detect duplicates by title `文献导读.pdf`, filename `literature_guide.pdf`, tag `codex-literature-guide`, or known attachment key from the manifest. If duplicates exist, stop for `replace / keep-both / cancel`; the MVP plugin supports `error` and `keep-both`, not replace/delete.
+
+5. Attach with the bundled client:
+
+```powershell
+python <skill-root>\scripts\zotero_guide_helper_attach.py `
+  --manifest <package>\attachment_manifest.json `
+  --report <package>\zotero_helper_attach_report.json
+```
+
+The client computes SHA256, calls `POST /guide-helper/attach-guide`, re-queries Zotero local API children, verifies title, `imported_file`, `application/pdf`, required tags, and storage SHA256.
+
+6. Treat HTTP 409 as a duplicate gate, not a failure to work around. Ask the user for `replace / keep-both / cancel`. `keep-both` requires explicit approval and maps to `--duplicate-policy keep-both`; replace is not implemented in the MVP plugin.
+7. Only after verification passes, update `zotero_attach_report.json`, `attachment_manifest.json`, and `status.json` to `attached`. Record:
+   - `attached_via: zotero_guide_helper_plugin`
+   - `actual_attachment_mode: stored`
+   - `zotero_source_attachment_key`
+   - `zotero_guide_attachment_key`
+   - `zotero_attachment.key` for the guide PDF only
+   - `zotero_attachment.links.enclosure.href` or plugin `storagePath`
+
+### Better BibTeX Bridge Fallback
+
+Use this route only when the Zotero Guide Helper plugin cannot be installed or the user explicitly asks for fallback. It modifies Zotero through Zotero's own JavaScript runtime, not by editing `zotero.sqlite` directly.
 
 Preconditions:
 
@@ -330,24 +369,16 @@ Zotero.Prefs.clear('extensions.zotero.debug-bridge.password', true);
 
 The runtime JavaScript must do only these operations: resolve the parent by item key, run a second duplicate check, import `literature_guide.pdf` as a stored child attachment, set title `文献导读.pdf`, add the default tags, write a result JSON, and clear the temporary bridge password.
 
-10. Write a local `zotero_attach_report.json` with the resulting attachment key, title, link mode, content type, tags, storage path, and verification status.
-11. Update `attachment_manifest.json` from `ready_to_attach` to `attached`, including:
-   - `actual_attachment_mode: stored`
-   - `attached_via: better_bibtex_ztoolkit_debug_bridge`
-   - `zotero_source_attachment_key`
-   - `zotero_guide_attachment_key`
-   - `zotero_attachment.key` for the guide PDF only
-   - `zotero_attachment.links.enclosure.href`
-12. Verify after attach:
-   - `GET http://127.0.0.1:23119/api/users/0/items/<item_key>/children?format=json` shows the new child; use `curl.exe` or Python `urllib`.
-   - child title is `文献导读.pdf`.
-   - `linkMode` is `imported_file` / stored.
-   - `contentType` is `application/pdf`.
-   - tags include `codex-literature-guide` and `guide-needs-review`.
-   - Zotero storage PDF exists.
-   - storage PDF SHA256 equals the package `literature_guide.pdf` SHA256.
-   - `prefs.js` no longer contains `extensions.zotero.debug-bridge.password`.
-13. Only after all checks pass, update `zotero_attach_report.json`, `attachment_manifest.json`, and `status.json` to `attached`.
+Verify after either route:
+
+- `GET http://127.0.0.1:23119/api/users/0/items/<item_key>/children?format=json` shows the new child; use `curl.exe` or Python `urllib`.
+- child title is `文献导读.pdf`.
+- `linkMode` is `imported_file` / stored.
+- `contentType` is `application/pdf`.
+- tags include `codex-literature-guide` and `guide-needs-review`.
+- Zotero storage PDF exists.
+- storage PDF SHA256 equals the package `literature_guide.pdf` SHA256.
+- If the fallback bridge was used, `prefs.js` no longer contains `extensions.zotero.debug-bridge.password`.
 
 Security and data-safety rules:
 

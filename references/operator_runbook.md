@@ -400,9 +400,35 @@ mode: stored/imported file
 tags: codex-literature-guide, guide-needs-review
 ```
 
-Use `references/zotero_contract.md` for the confirmed attachment route.
+Use `references/zotero_contract.md` for the confirmed attachment route. The default route is the Zotero Guide Helper plugin, not the debug bridge.
 
-Do not use the Zotero plugin helper `import-bibtex` or `import-ris` commands for this step. They import reference records into the currently selected Zotero target and do not attach `literature_guide.pdf` under the existing parent item.
+Check the plugin first:
+
+```powershell
+curl.exe -sS http://127.0.0.1:23119/guide-helper/health
+```
+
+If the endpoint is missing or does not report `plugin=zotero-guide-helper`, recommend installing the bundled XPI:
+
+```text
+<skill-root>/assets/zotero-guide-helper/zotero-guide-helper.xpi
+```
+
+After the plugin is available, run duplicate preflight:
+
+```powershell
+curl.exe -sS "http://127.0.0.1:23119/guide-helper/items/<item_key>/guide-attachments"
+```
+
+If duplicates exist, stop and ask for `replace / keep-both / cancel`. The MVP plugin supports duplicate rejection and explicit `keep-both`; replace/delete remains a manual or future route.
+
+Attach with:
+
+```powershell
+python <skill-root>\scripts\zotero_guide_helper_attach.py `
+  --manifest <package>\attachment_manifest.json `
+  --report <package>\zotero_helper_attach_report.json
+```
 
 For batch attach, first produce a decision table with one row per item key:
 
@@ -414,68 +440,11 @@ PDF gate
 blocked
 ```
 
-Attach only rows the user explicitly approves. Any existing guide attachment is a duplicate gate; ask `replace / keep-both / cancel` and do not write that row until the user decides. If the user keeps the existing guide, leave the new local package untouched and do not attach it.
+Attach only rows the user explicitly approves. A duplicate gate must be resolved before writing that row.
 
-For an existing Zotero item, do not start with `/connector/saveAttachment`; it depends on an active Connector save session and is not reliable for arbitrary existing items. Use the Better BibTeX/ztoolkit debug bridge route after preflight checks.
+Use the Better BibTeX/ztoolkit debug bridge only if the Zotero Guide Helper plugin cannot be installed or the user explicitly asks for fallback. Do not start with `/connector/saveAttachment`; it depends on an active Connector save session and is not reliable for arbitrary existing items.
 
-Recommended existing-item sequence:
-
-1. Use `curl.exe` or Python `urllib`, not PowerShell `Invoke-WebRequest`, to check:
-
-```powershell
-curl.exe -sS http://127.0.0.1:23119/connector/ping
-curl.exe -sS "http://127.0.0.1:23119/api/users/0/items/<item_key>/children?format=json"
-```
-
-Save the before-write children JSON under `source/`.
-
-2. Run duplicate preflight before writing. Check:
-
-```text
-title == 文献导读.pdf
-filename == literature_guide.pdf
-tag contains codex-literature-guide
-known old attachment key from attachment_manifest.json
-```
-
-If duplicates exist, stop and ask for `replace / keep-both / cancel`.
-
-3. Confirm attach eligibility:
-
-```text
-literature_guide.pdf exists and is non-empty
-attachment_manifest.json status is ready_to_attach
-status.json state/status is ready_to_attach / ready-to-attach
-validation and pre-attach harness have no fail
-```
-
-4. For Better BibTeX/ztoolkit bridge:
-
-```text
-backup prefs.js
-fully stop Zotero and wait for process exit
-write random temporary extensions.zotero.debug-bridge.password only after Zotero is stopped
-start Zotero from its installation directory with that directory as WorkingDirectory
-wait until Zotero local API is reachable
-wait/retry until Better BibTeX/ztoolkit bridge is loaded
-open zotero://ztoolkit-debug?... URL
-```
-
-Do not start Zotero hidden or with an arbitrary working directory for bridge writes; that can leave the local API or ztoolkit bridge unavailable. `connector/ping` reaching Zotero is not proof that the bridge has loaded. If the bridge result JSON is not written, stop, clean the temporary password from `prefs.js`, restart Zotero from the installation directory, then diagnose before retrying.
-
-5. Runtime JS must keep a second duplicate check and only do:
-
-```text
-resolve parent by item key
-check duplicate attachments again
-import literature_guide.pdf with Zotero.Attachments.importFromFile()
-set title 文献导读.pdf
-add codex-literature-guide and guide-needs-review tags
-write result JSON
-clear debug bridge password
-```
-
-6. Verify with Zotero local API and SHA256 before success:
+Verify with Zotero local API and SHA256 before success:
 
 ```text
 new child exists under parent item
@@ -484,7 +453,6 @@ contentType is application/pdf
 title is 文献导读.pdf
 tags include both defaults
 Zotero storage PDF SHA256 equals package literature_guide.pdf SHA256
-prefs.js no longer contains extensions.zotero.debug-bridge.password
 ```
 
 Only after these pass, update `zotero_attach_report.json`, `attachment_manifest.json`, and `status.json` to `attached`.
@@ -496,7 +464,7 @@ zotero_source_attachment_key = original paper PDF attachment used as input
 zotero_guide_attachment_key = newly imported 文献导读.pdf attachment
 ```
 
-Do not confuse the source PDF child key with the guide PDF child key. In batch writes, create one `zotero_attach_report.json` per item and verify each row independently with local API, stored-file mode, tags, SHA256, and `prefs.js` cleanup.
+Do not confuse the source PDF child key with the guide PDF child key. In batch writes, create one `zotero_attach_report.json` or `zotero_helper_attach_report.json` per item and verify each row independently with local API, stored-file mode, tags, and SHA256.
 
 ## Successful Patterns To Preserve
 
